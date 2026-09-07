@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>간편 계산기</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1020; --panel:#151c2f; --key:#263149; --text:#f7f9ff; --muted:#9da9bf; --accent:#6c7cff; --operator:#37446a; --danger:#442d42; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; font-family:"Malgun Gothic","맑은 고딕",system-ui,sans-serif; background:radial-gradient(circle at top,#1d2850 0,var(--bg) 55%); color:var(--text); display:grid; place-items:center; padding:20px; }
+    .app { width:min(100%,760px); display:grid; grid-template-columns:minmax(300px,420px) minmax(250px,1fr); gap:18px; }
+    .calculator,.history { background:rgba(21,28,47,.96); border:1px solid rgba(255,255,255,.08); border-radius:24px; box-shadow:0 18px 50px rgba(0,0,0,.35); }
+    .calculator { padding:20px; }
+    .display { min-height:138px; padding:18px; margin-bottom:16px; background:#090e1b; border-radius:18px; text-align:right; display:flex; flex-direction:column; justify-content:flex-end; overflow:hidden; }
+    .expression { min-height:28px; color:var(--muted); font-size:16px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .result { margin-top:8px; font-size:clamp(32px,8vw,52px); line-height:1.15; font-weight:700; overflow-x:auto; scrollbar-width:thin; white-space:nowrap; }
+    .result.error { color:#ff9c9c; font-size:20px; white-space:normal; }
+    .keys { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+    button { border:0; border-radius:15px; min-height:62px; color:var(--text); background:var(--key); font:700 21px inherit; cursor:pointer; transition:transform .08s,filter .15s; touch-action:manipulation; }
+    button:hover { filter:brightness(1.15); }
+    button:active,.pressed { transform:scale(.95); filter:brightness(1.25); }
+    button:focus-visible { outline:3px solid #aab3ff; outline-offset:2px; }
+    .operator { background:var(--operator); color:#bfc7ff; }
+    .action { background:var(--danger); color:#ffc0cf; }
+    .equals { background:linear-gradient(135deg,#7584ff,#5865e8); grid-row:span 2; min-height:134px; }
+    .zero { grid-column:span 2; }
+    .history { padding:20px; max-height:580px; display:flex; flex-direction:column; }
+    .history-header { display:flex; align-items:center; justify-content:space-between; gap:12px; border-bottom:1px solid rgba(255,255,255,.08); padding-bottom:14px; }
+    h1,h2 { margin:0; } h1 { font-size:18px; color:#bdc6db; margin-bottom:12px; } h2 { font-size:20px; }
+    #clearHistory { min-height:auto; padding:9px 12px; font-size:14px; background:#303a52; }
+    #historyList { list-style:none; margin:0; padding:8px 0 0; overflow-y:auto; }
+    #historyList li { padding:13px 6px; border-bottom:1px solid rgba(255,255,255,.07); text-align:right; }
+    .history-expression { color:var(--muted); font-size:14px; overflow-wrap:anywhere; } .history-result { margin-top:4px; font-size:20px; font-weight:700; overflow-wrap:anywhere; }
+    .empty { color:var(--muted); text-align:center!important; padding:42px 4px!important; border:0!important; }
+    .hint { color:var(--muted); font-size:12px; text-align:center; margin:14px 0 0; line-height:1.5; }
+    @media (max-width:680px) { body{padding:10px;align-items:start}.app{grid-template-columns:1fr}.calculator,.history{border-radius:20px}.history{max-height:300px}button{min-height:58px}.equals{min-height:126px} }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="calculator" aria-label="계산기">
+      <h1>간편 계산기</h1>
+      <div class="display" aria-live="polite">
+        <div id="expression" class="expression">계산식을 입력하세요</div>
+        <div id="result" class="result">0</div>
+      </div>
+      <div class="keys">
+        <button class="action" data-action="clear">AC</button>
+        <button class="action" data-action="backspace" aria-label="마지막 숫자 삭제">⌫</button>
+        <button class="operator" data-operator="÷">÷</button>
+        <button class="operator" data-operator="×">×</button>
+        <button data-number="7">7</button><button data-number="8">8</button><button data-number="9">9</button><button class="operator" data-operator="-">−</button>
+        <button data-number="4">4</button><button data-number="5">5</button><button data-number="6">6</button><button class="operator" data-operator="+">+</button>
+        <button data-number="1">1</button><button data-number="2">2</button><button data-number="3">3</button><button class="equals" data-action="equals">=</button>
+        <button class="zero" data-number="0">0</button><button data-action="decimal">.</button>
+      </div>
+      <p class="hint">키보드: 숫자 · + − * / · Enter · Backspace · Esc</p>
+    </section>
+    <aside class="history">
+      <div class="history-header"><h2>계산 기록</h2><button id="clearHistory">전체 삭제</button></div>
+      <ul id="historyList"></ul>
+    </aside>
+  </main>
+  <script>
+    (() => {
+      'use strict';
+      const MAX_DIGITS = 16, STORAGE_KEY = 'easyCalculatorHistoryV1';
+      const resultEl = document.querySelector('#result'), expressionEl = document.querySelector('#expression'), historyEl = document.querySelector('#historyList');
+      let current='0', stored=null, operator=null, waiting=false, justCalculated=false, expressionParts=[];
+
+      const pretty = value => {
+        if (!Number.isFinite(value)) return '계산할 수 없습니다.';
+        const clean = Number.parseFloat(Number(value).toPrecision(15));
+        if (Math.abs(clean) >= 1e15 || (Math.abs(clean) > 0 && Math.abs(clean) < 1e-9)) return clean.toExponential(9).replace(/\.0+e/,'e');
+        return String(clean);
+      };
+      const calculate = (a,b,op) => op==='+' ? a+b : op==='-' ? a-b : op==='×' ? a*b : a/b;
+      function setError(message){ resultEl.textContent=message; resultEl.classList.add('error'); current='0'; stored=null; operator=null; waiting=false; justCalculated=true; expressionParts=[]; }
+      function update(){ resultEl.classList.remove('error'); resultEl.textContent=current; expressionEl.textContent=expressionParts.length ? expressionParts.join(' ') : '계산식을 입력하세요'; }
+      function inputNumber(n){
+        if (justCalculated){ current=n; stored=null; operator=null; expressionParts=[]; justCalculated=false; waiting=false; }
+        else if (waiting){ current=n; waiting=false; }
+        else if (current==='0') current=n;
+        else if (current==='-0') current='-'+n;
+        else if (current.replace(/[-.]/g,'').length < MAX_DIGITS) current+=n;
+        update();
+      }
+      function decimal(){
+        if (justCalculated){ current='0.'; expressionParts=[]; justCalculated=false; }
+        else if (waiting){ current='0.'; waiting=false; }
+        else if (!current.includes('.')) current+='.';
+        update();
+      }
+      function chooseOperator(next){
+        if (resultEl.classList.contains('error')) clearAll();
+        if (next==='-' && (waiting || (stored===null && current==='0' && expressionParts.length===0))){ current='-0'; waiting=false; justCalculated=false; update(); return; }
+        const value=Number(current);
+        if (operator && !waiting){
+          if (operator==='÷' && value===0){ setError('0으로 나눌 수 없습니다.'); expressionEl.textContent=expressionParts.concat([current]).join(' '); return; }
+          stored=calculate(stored,value,operator); current=pretty(stored);
+        } else stored=value;
+        operator=next; waiting=true; justCalculated=false; expressionParts=[current,next]; update();
+      }
+      function equals(){
+        if (!operator || waiting || stored===null) return;
+        const right=Number(current), full=`${pretty(stored)} ${operator} ${current}`;
+        if (operator==='÷' && right===0){ setError('0으로 나눌 수 없습니다.'); expressionEl.textContent=full; return; }
+        const answer=pretty(calculate(stored,right,operator));
+        if (answer==='계산할 수 없습니다.'){ setError(answer); return; }
+        expressionParts=[full,'=']; current=answer; saveHistory(full,answer); stored=null; operator=null; waiting=false; justCalculated=true; update();
+      }
+      function clearAll(){ current='0'; stored=null; operator=null; waiting=false; justCalculated=false; expressionParts=[]; update(); }
+      function backspace(){
+        if (justCalculated || waiting || resultEl.classList.contains('error')) return clearAll();
+        current=current.length<=1 || (current.startsWith('-') && current.length===2) ? '0' : current.slice(0,-1); update();
+      }
+      function getHistory(){ try{return JSON.parse(localStorage.getItem(STORAGE_KEY))||[];}catch{return[];} }
+      function saveHistory(expression,result){ const list=getHistory(); list.unshift({expression,result}); localStorage.setItem(STORAGE_KEY,JSON.stringify(list.slice(0,30))); renderHistory(); }
+      function renderHistory(){ const list=getHistory(); historyEl.replaceChildren(); if(!list.length){ const li=document.createElement('li'); li.className='empty'; li.textContent='아직 계산 기록이 없습니다.'; historyEl.append(li); return; } list.forEach(item=>{ const li=document.createElement('li'),e=document.createElement('div'),r=document.createElement('div'); e.className='history-expression'; r.className='history-result'; e.textContent=item.expression+' ='; r.textContent=item.result; li.append(e,r); historyEl.append(li); }); }
+      document.querySelector('.keys').addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b)return; if(b.dataset.number)inputNumber(b.dataset.number); else if(b.dataset.operator)chooseOperator(b.dataset.operator); else if(b.dataset.action==='decimal')decimal(); else if(b.dataset.action==='equals')equals(); else if(b.dataset.action==='clear')clearAll(); else if(b.dataset.action==='backspace')backspace(); });
+      document.querySelector('#clearHistory').addEventListener('click',()=>{ localStorage.removeItem(STORAGE_KEY); renderHistory(); });
+      document.addEventListener('keydown',e=>{ let selector=''; if(/^\d$/.test(e.key)){inputNumber(e.key);selector=`[data-number="${e.key}"]`;} else if(e.key==='.') {decimal();selector='[data-action="decimal"]';} else if(['+','-','*','/'].includes(e.key)){const op={'*':'×','/':'÷'}[e.key]||e.key;chooseOperator(op);selector=`[data-operator="${op}"]`;} else if(e.key==='Enter'||e.key==='='){equals();selector='[data-action="equals"]';} else if(e.key==='Backspace'){backspace();selector='[data-action="backspace"]';} else if(e.key==='Escape'){clearAll();selector='[data-action="clear"]';} else return; e.preventDefault(); const b=document.querySelector(selector); b?.classList.add('pressed'); setTimeout(()=>b?.classList.remove('pressed'),100); });
+      update(); renderHistory();
+    })();
+  </script>
+</body>
+</html>
